@@ -1,29 +1,155 @@
 @import "tailwindcss";
 
+/*
+ * Palette: a manuscript on a copy-desk.
+ *
+ * Copy editors worked in two pencils — non-photo blue for marks and queries,
+ * because it did not reproduce when the page was printed, and red for
+ * corrections. That split is the whole colour system here: blue is the tool
+ * marking up your prose, red is reserved for the strongest flags and for
+ * anything that went wrong. Nothing else is coloured.
+ */
+@theme {
+  --color-desk: #dedfd8; /* the surface the sheet lies on */
+  --color-desk-edge: #cbcdc3;
+  --color-sheet: #fbfaf7; /* the paper */
+  --color-ink: #191917; /* the author's ink */
+  --color-ink-soft: #63625b; /* secondary text — 5.8:1 on sheet */
+  --color-rule: #e2ddd3; /* hairlines, ruled edges */
+  --color-pencil: #2c5c86; /* non-repro blue — marks, 6.7:1 on sheet */
+  --color-pencil-soft: #7796b3; /* line numbers and other redundant marks */
+  --color-pencil-wash: #cbdceb; /* the light underline */
+  --color-mark-wash: #eaeef3; /* the faintest lift behind a heavy mark */
+  --color-red-pencil: #a93226; /* corrections — 6.3:1 on sheet */
+}
+
 @theme inline {
-  --font-sans: var(--font-dm-sans), system-ui, sans-serif;
-  --font-serif: var(--font-dm-serif), Georgia, serif;
-  --font-mono: var(--font-dm-mono), ui-monospace, monospace;
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, sans-serif;
+  --font-serif: var(--font-newsreader), Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-sometype), ui-monospace, monospace;
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
+/*
+ * The same desk, at night, under a lamp.
+ *
+ * Only the luminance inverts — the system does not change. Blue is still the
+ * mark, red is still the correction, and the sheet is still the lit thing
+ * sitting on a darker surface. Pencil gets *brighter* rather than darker,
+ * because that is what a mark does when the light is low: it catches it.
+ *
+ * These override the @theme variables above. Unlayered rules beat Tailwind's
+ * theme layer, so every `bg-desk`, `text-ink` and the rest flips with them —
+ * no `dark:` variant anywhere in the markup.
+ */
+:root {
+  color-scheme: light dark;
 }
 
-html {
-  font-size: 16px;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-desk: #131311;
+    --color-desk-edge: #34342f;
+    --color-sheet: #232320; /* the paper, lit */
+    --color-ink: #eae7df; /* warm off-white, never pure white */
+    --color-ink-soft: #a3a096; /* 6.0:1 on sheet, 7.1:1 on desk */
+    --color-rule: #3a3a35;
+    --color-pencil: #7fb2e0; /* 7.0:1 on sheet, and light enough to sit under dark text */
+    --color-pencil-soft: #4a6d8c; /* 2.9:1 — redundant marks only, as in daylight */
+    --color-pencil-wash: #2c4257;
+    --color-mark-wash: #2b343d; /* a heavier lift than in daylight, to read at all */
+    --color-red-pencil: #e0776a; /* 5.3:1 on sheet, 6.2:1 on desk */
+  }
 }
 
 ::selection {
-  background-color: #d6d3d1; /* stone-300 */
-  color: #1c1917; /* stone-900 */
+  background-color: var(--color-pencil-wash);
+  color: var(--color-ink);
 }
 
-/* Textarea — remove browser default resize handle chrome */
+:focus-visible {
+  outline: 2px solid var(--color-pencil);
+  outline-offset: 2px;
+}
+
+/* The sheet grows as you fill it, up to a point, then scrolls. `field-sizing`
+   is progressive: browsers without it keep the fixed box set in the markup. */
 textarea {
   resize: none;
+  field-sizing: content;
+  max-height: 60vh;
+}
+
+/* ── The sheet: paper resting on the desk ───────────────────────────────────── */
+
+.sheet {
+  background: var(--color-sheet);
+  border: 1px solid var(--color-rule);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.8),
+    0 1px 1px rgb(41 38 30 / 0.04),
+    0 10px 28px -14px rgb(41 38 30 / 0.22);
+}
+
+/* A dark shadow does nothing on a dark desk. At night the sheet reads as paper
+   from the lamp catching its top edge, and from a deeper well beneath it. */
+@media (prefers-color-scheme: dark) {
+  .sheet {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.05),
+      0 1px 2px rgb(0 0 0 / 0.4),
+      0 12px 32px -16px rgb(0 0 0 / 0.65);
+  }
+}
+
+/* ── Editor's marks on the prose ────────────────────────────────────────────── */
+
+/* A mark means "look here". How bad it is lives in the margin, not the text. */
+.marked {
+  text-decoration-line: underline;
+  text-decoration-color: var(--color-pencil-wash);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 4px;
+}
+
+/* A plain token, not a color-mix: the build emits a static fallback for
+   color-mix() with the light-mode blue baked in, which lands in dark mode on
+   any browser that lacks it. A token per palette cannot go wrong. */
+.marked-heavy {
+  text-decoration-line: underline;
+  text-decoration-color: var(--color-pencil);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+  background: var(--color-mark-wash);
+}
+
+/* ── The proof coming back from the editor ──────────────────────────────────── */
+
+/* Marks arrive down the margin in reading order, the way a hand would make
+   them. One orchestrated moment on arrival; nothing else on the page moves. */
+@keyframes mark-in {
+  from {
+    opacity: 0;
+    transform: translateX(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.mark-in {
+  animation: mark-in 320ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards;
+  animation-delay: calc(var(--i, 0) * 26ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark-in {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 1ms !important;
+  }
 }
