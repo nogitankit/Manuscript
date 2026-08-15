@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback } from "react";
-import { Loader2, ScanText, AlertTriangle, ChevronRight } from "lucide-react";
+import { Loader2, ScanText, AlertTriangle, ChevronRight, Upload } from "lucide-react";
 
 // ─── Types (matching the actual API response from /api/analyze) ────────────────
 
@@ -34,6 +34,9 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const CATEGORY_ORDER = ["vocabulary", "structural", "formatting", "communication"];
+
+/** Longest text /api/analyze accepts. */
+const MAX_CHARS = 10_000;
 
 function scoreLabel(score: number): { label: string; color: string } {
   if (score > 75) return { label: "Very likely AI", color: "text-amber-700" };
@@ -335,10 +338,61 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
   const resultRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const charCount = text.length;
-  const overLimit = charCount > 10_000;
+  const overLimit = charCount > MAX_CHARS;
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // let the same file be picked again
+    if (!file) return;
+
+    const isPdf = /\.pdf$/i.test(file.name);
+    if (!isPdf && !/\.(txt|text|md|markdown)$/i.test(file.name)) {
+      setError("Only .pdf and plain-text files (.txt, .md) can be uploaded.");
+      return;
+    }
+    if (file.size > (isPdf ? 20_000_000 : 1_000_000)) {
+      setError(`That file is too large (${isPdf ? "20 MB" : "1 MB"} max).`);
+      return;
+    }
+
+    setError(null);
+    setReading(true);
+    try {
+      const contents = isPdf
+        ? await (await import("@/lib/pdf")).extractPdfText(file, MAX_CHARS)
+        : (await file.text()).replace(/\r\n/g, "\n");
+
+      const trimmed = contents.trim();
+      if (!trimmed) {
+        setError(
+          isPdf
+            ? "No text found in that PDF — it is probably a scan. Run OCR on it first, or paste the text."
+            : "That file is empty."
+        );
+        return;
+      }
+      setText(trimmed.slice(0, MAX_CHARS));
+      setResult(null);
+      if (trimmed.length > MAX_CHARS) {
+        setError(
+          `That file is longer than the ${MAX_CHARS.toLocaleString()}-character limit — only the beginning was kept.`
+        );
+      }
+    } catch {
+      setError(
+        isPdf
+          ? "Could not read that PDF. It may be corrupt or password-protected."
+          : "Could not read that file."
+      );
+    } finally {
+      setReading(false);
+    }
+  };
 
   const handleAnalyze = async () => {
     if (!text.trim() || loading || overLimit) return;
@@ -437,11 +491,48 @@ export default function Home() {
                 }`}
                 aria-live="polite"
               >
-                {charCount.toLocaleString()} / 10,000
+                {charCount.toLocaleString()} / {MAX_CHARS.toLocaleString()}
                 {overLimit && " — exceeds limit"}
               </span>
 
               <div className="flex items-center gap-3">
+                {/* Upload button */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.txt,.text,.md,.markdown,application/pdf,text/plain,text/markdown"
+                  onChange={handleFileChange}
+                  className="hidden"
+                  aria-hidden
+                  tabIndex={-1}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={reading}
+                  className={`
+                    flex items-center gap-2
+                    px-4 py-2.5
+                    bg-white text-stone-700
+                    text-[12px] font-medium tracking-wide
+                    border border-stone-300 shadow-sm
+                    transition-all duration-150
+                    disabled:opacity-50 disabled:cursor-wait
+                    not-disabled:hover:bg-stone-100 not-disabled:hover:border-stone-400 not-disabled:hover:text-stone-900
+                    not-disabled:active:scale-[0.97] not-disabled:active:bg-stone-200 not-disabled:active:shadow-none
+                    focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-400
+                  `}
+                  aria-label="Upload a PDF or plain-text file to analyze"
+                  title="Upload .pdf, .txt or .md"
+                >
+                  {reading ? (
+                    <Loader2 size={13} className="animate-spin" aria-hidden />
+                  ) : (
+                    <Upload size={13} aria-hidden />
+                  )}
+                  {reading ? "Reading…" : "Upload File"}
+                </button>
+
                 {/* Sample button */}
                 <button
                   type="button"
@@ -597,7 +688,7 @@ export default function Home() {
       <footer className="border-t border-stone-200 mt-16">
         <div className="max-w-screen-xl mx-auto px-6 py-4 flex items-center justify-between">
           <span className="font-mono text-[10px] text-stone-400">
-            33 heuristic rules · No external APIs · Pure TypeScript
+            34 heuristic rules · No external APIs · Pure TypeScript
           </span>
           <span className="font-mono text-[10px] text-stone-300">
             Manuscript v0.1
