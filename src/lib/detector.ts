@@ -4,11 +4,15 @@
  * Pure-heuristic AI essay detection engine.
  * No external APIs — all signal comes from local text analysis.
  *
- * Four detection categories (33 rules total):
- *   1. Vocabulary / Clichés        (rules V-01 … V-14)
+ * Four detection categories (34 rules total):
+ *   1. Vocabulary / Clichés        (rules V-01 … V-15)
  *   2. Structural / Burstiness     (rules S-01 … S-06)
  *   3. Formatting                  (rules F-01 … F-05)
  *   4. Communication / Hedging     (rules C-01 … C-08)
+ *
+ * 28 of them judge one sentence at a time; the six S-rules need the whole
+ * document. Keep the counts in this header in step with the rule arrays below —
+ * `ruleRatioToScore` is calibrated against the sentence-rule count.
  */
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -49,15 +53,38 @@ export interface AnalysisResult {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Split text into sentences using punctuation boundaries. */
+/**
+ * Abbreviations whose full stop does not end a sentence. Also catches single
+ * initials ("J. Smith") via the leading single-letter alternative.
+ */
+const ABBREVIATION_END =
+  /(?:^|\s)(?:[a-z]|mr|mrs|ms|dr|prof|rev|sr|jr|st|vs|etc|e\.g|i\.e|cf|al|fig|no|vol|pp|inc|ltd|co|approx)\.$/i;
+
+/**
+ * Split text into sentences at `.`, `!` or `?` followed by whitespace.
+ *
+ * The next sentence does *not* have to start with a capital — requiring one
+ * silently glued a lower-case sentence onto its predecessor, and the pair was
+ * then scored as a single long sentence, which skewed every length statistic.
+ * Abbreviations are excluded by looking at the text *before* the stop instead.
+ */
 function splitIntoSentences(text: string): string[] {
-  // Split on ., !, ? followed by whitespace or end-of-string,
-  // but keep abbreviations like "e.g." from fragmenting.
-  const raw = text
-    .replace(/([.!?])\s+(?=[A-Z"'])/g, "$1\x00")
-    .split("\x00")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const raw: string[] = [];
+  // Terminal punctuation, any closing quote/bracket, then whitespace.
+  const boundary = /([.!?]+["'”’)\]]?)\s+/g;
+  let start = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = boundary.exec(text)) !== null) {
+    const chunk = text.slice(start, match.index + match[1].length);
+    if (ABBREVIATION_END.test(chunk)) continue; // "e.g. " — not a real boundary
+    const trimmed = chunk.trim();
+    if (trimmed.length > 0) raw.push(trimmed);
+    start = boundary.lastIndex;
+  }
+
+  const tail = text.slice(start).trim();
+  if (tail.length > 0) raw.push(tail);
 
   // Fallback: if the whole text was one block, treat each line as a sentence.
   if (raw.length === 1 && text.includes("\n")) {
@@ -91,10 +118,20 @@ function stdDev(nums: number[]): number {
 
 /** Build a regex that matches any entry in `phrases` as a whole phrase. */
 function phraseRegex(phrases: string[]): RegExp {
-  const escaped = phrases.map((p) =>
-    p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  );
-  return new RegExp(`\\b(${escaped.join("|")})\\b`, "i");
+  return new RegExp(`\\b(${alternation(phrases)})\\b`, "i");
+}
+
+/** Same, but only when the phrase opens the string. */
+function openingPhraseRegex(phrases: string[]): RegExp {
+  return new RegExp(`^(${alternation(phrases)})\\b`, "i");
+}
+
+/** Escaped alternation, longest first so a prefix never shadows a longer entry. */
+function alternation(phrases: string[]): string {
+  return [...phrases]
+    .sort((a, b) => b.length - a.length)
+    .map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
 }
 
 // ─── Rule Dictionaries ────────────────────────────────────────────────────────
@@ -319,6 +356,9 @@ const VERBOSE_BOOSTERS: string[] = [
 
 /**
  * C-01 – Sycophantic openers
+ *
+ * "of course" lives in VERBOSE_BOOSTERS (V-05) instead: a phrase in two lists
+ * fires two rules for one piece of evidence and double-counts in the score.
  */
 const SYCOPHANTIC_PHRASES: string[] = [
   "great question",
@@ -332,7 +372,6 @@ const SYCOPHANTIC_PHRASES: string[] = [
   "i am glad you asked",
   "certainly",
   "absolutely",
-  "of course",
   "sure thing",
   "happy to help",
 ];
@@ -422,6 +461,7 @@ const VERBOSE_REGEX = phraseRegex(VERBOSE_BOOSTERS);
 const SYCO_REGEX = phraseRegex(SYCOPHANTIC_PHRASES);
 const HEDGE_REGEX = phraseRegex(HEDGING_PHRASES);
 const PASSIVE_REGEX = phraseRegex(PASSIVE_VOICE_MARKERS);
+const TRANSITION_OPENER_REGEX = openingPhraseRegex(ROBOTIC_TRANSITIONS);
 
 /**
  * Master list of all sentence-level rules.
@@ -606,10 +646,7 @@ const SENTENCE_RULES: DetectionRule[] = [
     id: "C-03",
     label: "Robotic transition marker at sentence start",
     category: "communication",
-    test: (_, low) =>
-      /^(furthermore|moreover|additionally|subsequently|consequently|in addition|in this regard|in this context|with this in mind|bearing this in mind|in light of this|given the above|as a result|as such|hence|accordingly|notwithstanding|nevertheless|nonetheless)\b/i.test(
-        low.trim()
-      ),
+    test: (_, low) => TRANSITION_OPENER_REGEX.test(low.trim()),
   },
   {
     id: "C-04",
@@ -666,17 +703,25 @@ function analyzeDocumentStructure(sentences: string[]): DocumentSignal[] {
   const signals: DocumentSignal[] = [];
   const lengths = sentences.map(wordCount);
 
-  // S-01 – Low sentence-length variance (AI uniform rhythm)
-  // Threshold relaxed from sd<5 to sd<8: ChatGPT varies more than 5 words
-  // but still far more uniformly than human writers.
+  // S-01 – Low sentence-length variation (AI uniform rhythm)
+  //
+  // Measured as spread relative to the mean, not in raw words: 7 words of
+  // spread is uniform in a document averaging 30-word sentences and bursty in
+  // one averaging 12. An absolute `sd < 8` threshold could not tell those
+  // apart, and fired on almost any tidy human paragraph.
+  //
+  // Human prose typically sits at 0.5–0.7 relative spread; a model that has
+  // settled into one rhythm sits near 0.2–0.35. Four sentences was far too
+  // small a sample to call either way, hence the floor of 8.
   const sd = stdDev(lengths);
   const avg = mean(lengths);
-  if (sentences.length >= 4 && sd < 8 && avg > 8) {
+  const relativeSpread = avg > 0 ? sd / avg : 0;
+  if (sentences.length >= 8 && relativeSpread < 0.35 && avg > 8) {
     signals.push({
       ruleId: "S-01",
-      label: "Low sentence-length variance (uniform rhythm typical of AI)",
+      label: "Low sentence-length variation (uniform rhythm typical of AI)",
       sentenceIndices: sentences.map((_, i) => i),
-      weight: 0.9,
+      weight: 0.8,
     });
   }
 
@@ -764,19 +809,32 @@ function analyzeDocumentStructure(sentences: string[]): DocumentSignal[] {
 /**
  * Convert a raw rule-hit ratio (0–1) into a 0–100 score.
  *
- * Calibration (27 sentence-level rules + V-15 = 28 total):
- *   0 rules fired  →  ~12   (baseline noise floor)
- *   2 rules fired  →  ~35   (low suspicion)
- *   3 rules fired  →  ~51   (moderate AI signal)
- *   5 rules fired  →  ~75   (strong AI signal)
- *   8+ rules fired →  ~92+  (very likely AI)
+ * Measured calibration over the 28 sentence-level rules:
+ *   0 rules fired  →  16   (baseline noise floor — the scale does not start at 0)
+ *   1 rule  fired  →  24
+ *   2 rules fired  →  34
+ *   3 rules fired  →  46
+ *   5 rules fired  →  69
+ *   8 rules fired  →  91
  *
- * Achieved by shifting the logistic center from 0.30 → 0.12 and
- * increasing steepness from 12 → 14 for a sharper decision boundary.
+ * Logistic centred at 0.12 with steepness 14.
  */
 function ruleRatioToScore(hitRatio: number): number {
   const score = 100 / (1 + Math.exp(-14 * (hitRatio - 0.12)));
   return Math.min(100, Math.max(0, Math.round(score)));
+}
+
+/**
+ * Apply a structural signal by closing `weight × fraction` of the distance to
+ * 100, rather than adding flat points.
+ *
+ * Flat addition saturated: six signals at +14 each pinned any document with a
+ * few structural hits to exactly 100, so "very likely AI" could not be graded
+ * any finer and the top of the scale carried no information. Closing a share of
+ * the remaining headroom keeps every signal meaningful and never reaches 100.
+ */
+function closeGap(score: number, weight: number, fraction: number): number {
+  return score + (100 - score) * weight * fraction;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -823,8 +881,7 @@ export function analyzeText(text: string): AnalysisResult {
         const sr = sentenceResults[idx];
         if (!sr.triggeredRules.includes(tag)) {
           sr.triggeredRules.push(tag);
-          const bump = Math.round(signal.weight * 20);
-          sr.score = Math.min(100, sr.score + bump);
+          sr.score = Math.round(closeGap(sr.score, signal.weight, 0.2));
         }
       }
     }
@@ -854,13 +911,14 @@ export function analyzeText(text: string): AnalysisResult {
   const flaggedScore = 100 / (1 + Math.exp(-14 * (flaggedRatio - 0.35)));
 
   // Blend: 65% sentence-level signal + 35% document-wide flagged ratio
-  let overallScore = Math.round(0.65 * weightedAvg + 0.35 * flaggedScore);
+  let overallScore = 0.65 * weightedAvg + 0.35 * flaggedScore;
 
-  // Component C: structural document signals — each adds a meaningful bonus
+  // Component C: structural document signals — each closes a share of the gap
+  // to 100, so several signals compound without ever pinning the scale.
   for (const signal of docSignals) {
-    overallScore = Math.min(100, overallScore + Math.round(signal.weight * 14));
+    overallScore = closeGap(overallScore, signal.weight, 0.2);
   }
-  overallScore = Math.min(100, Math.max(0, overallScore));
+  overallScore = Math.min(100, Math.max(0, Math.round(overallScore)));
 
   // ── 4. Breakdown ───────────────────────────────────────────────────────────
 
