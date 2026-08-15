@@ -155,9 +155,10 @@ the clichés, instead of both pinning at 100. The result is clamped to 0–100.
 | 26–50 | Uncertain |
 | 0–25 | Likely Human |
 
-The highlighted text uses its own thresholds per sentence: amber above 50, grey
-21–50, plain at 20 or below. Click any highlighted sentence to see which checks
-it tripped.
+The marked-up copy uses its own thresholds per sentence: a heavy pencil
+underline above 50, a light one 21–50, no mark at 20 or below. The rule codes
+behind each sentence are set in the right margin; pick one to read the rules in
+full.
 
 ---
 
@@ -210,49 +211,6 @@ authorship — and the engine cannot tell those apart. Some list entries are com
 enough to be near-universal: `V-01` includes *both*, *not only*, *but also*, *a
 number of* and *a variety of*, and `V-12` fires on any use of *ensure*.
 
-**It is trivial to defeat.** Ask a chatbot to vary its sentence lengths and avoid
-a handful of words and the score collapses. The rules are public, in this repo,
-and fixed.
-
-**So: do not use this to accuse anyone.** It has no calibration against real
-data, no confidence interval, and no ground truth behind any threshold. It is a
-reading aid — useful for spotting which parts of a draft sound generic, and for
-seeing what a machine's default register looks like.
-
----
-
-## Two tools in the box, not yet connected
-
-Both are finished, tested, and used by nothing. They sit in `src/lib/` waiting
-for a caller.
-
-### Word-variety measures — `LexicalMetrics.ts`
-
-Four ways of asking "how much does this writer repeat themselves?" Feed it raw
-text and it returns all four. Repetitive writing is one of the more durable
-signals, because it survives paraphrasing in a way that word lists do not.
-
-| Measure | Plain meaning |
-|---|---|
-| MATTR | Slides a 50-word window along the text and averages how many words in each window are new. Window-based so long texts aren't unfairly penalised. |
-| MTLD | Reads until the text starts repeating itself, notes how far it got, resets, repeats — then reports the average run length. Measured forwards and backwards and averaged. |
-| Hapax ratio | The share of words used exactly once. |
-| Yule's K | One number for overall repetitiveness. Higher means more repetition. |
-
-### Hidden-watermark check — `WatermarkDetector.ts`
-
-Some text generators sign their output invisibly: at each word they secretly
-split the vocabulary in two and nudge the model toward one half. The halves are
-chosen by a rule that depends on the preceding words and a secret key, so the
-bias is undetectable to a reader but leaves a statistical fingerprint. This class
-looks for it and reports how far the text sits from chance.
-
-Two hard conditions: it works on the numeric IDs a model uses internally, not
-words, and it only sees a watermark if it holds the same secret key and settings
-the generator used. Without a cooperating generator it has nothing to find. It
-is a working implementation of the technique, not a detector for other people's
-watermarks.
-
 ---
 
 ## Getting text in
@@ -274,7 +232,7 @@ when that happens.
 ```bash
 npm install
 npm run dev     # http://localhost:3000
-npm test        # 61 checks across the library modules
+npm test        # 22 checks across the library modules
 npm run lint
 npm run build
 ```
@@ -289,10 +247,10 @@ type stripping.
 | Path | What it is |
 |---|---|
 | `src/lib/detector.ts` | All 34 rules, the scoring maths, and `analyzeText()` |
-| `src/lib/LexicalMetrics.ts` | Word-variety measures (unused) |
-| `src/lib/WatermarkDetector.ts` | Hidden-watermark check (unused) |
 | `src/lib/pdf.ts` | PDF text extraction and rewrapping, browser-side |
-| `src/app/page.tsx` | The whole interface — dial, highlighted text, rule breakdown |
+| `src/lib/sample.ts` | The passage used as the worked example on the page |
+| `src/app/page.tsx` | Marks up the sample on the server so the example on the page cannot drift from the engine |
+| `src/app/Desk.tsx` | The interface — the sheet, the reading, the mark rail, the tally |
 | `src/app/api/analyze/route.ts` | `POST { text }` → score. Rejects empty text and anything over 10,000 characters |
 
 ---
@@ -316,8 +274,6 @@ left is worth knowing if you touch it.
   length in words, assumes English prose.
 - **Word lists drift out of date.** They describe how chatbots wrote when the
   lists were typed. Models change register faster than the lists get edited.
-- **Two finished modules are wired to nothing.** `LexicalMetrics.ts` and
-  `WatermarkDetector.ts` are tested and unused — see above.
 
 
 
